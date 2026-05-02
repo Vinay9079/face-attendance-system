@@ -1,6 +1,0 @@
-dataset/
-trainer/trainer.yml
-Attendance.csv
-__pycache__/
-*.pyc
-venv/
