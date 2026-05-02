@@ -1,0 +1,182 @@
+import cv2
+import numpy as np
+from PIL import Image
+import os
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from datetime import datetime
+import csv
+
+# Haarcascade path
+detector = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+
+# GUI setup
+root = tk.Tk()
+root.title("Face Recognition Attendance")
+root.geometry("400x300")
+root.configure(bg="#afafaf")
+
+tk.Label(root, text="Face Recognition Attendance", font=("Arial", 16), bg="#afafaf").pack(pady=20)
+
+# Create dataset & trainer folder if not exists
+if not os.path.exists("dataset"):
+    os.makedirs("dataset")
+
+if not os.path.exists("trainer"):
+    os.makedirs("trainer")
+
+# Capture Images function - Save 1 image per person in a separate folder
+def capture_images():
+    user_id = simpledialog.askstring("Input", "Enter your Roll No / ID:")
+    if not user_id:
+        messagebox.showerror("Error", "ID can't be empty!")
+        return
+
+    user_folder = os.path.join("dataset", user_id)
+    if not os.path.exists(user_folder):
+        os.makedirs(user_folder)
+
+    cam = cv2.VideoCapture(0)
+    detector = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+    captured = False
+
+    while True:
+        ret, img = cam.read()
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = detector.detectMultiScale(gray, 1.3, 5)
+
+        for (x, y, w, h) in faces:
+            face_img = gray[y:y + h, x:x + w]
+            file_path = os.path.join(user_folder, f"{user_id}.jpg")
+            cv2.imwrite(file_path, face_img)
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(img, "Captured", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow('Capture - Press Q to exit', img)
+            captured = True
+            break
+
+        if cv2.waitKey(1) & 0xFF == ord('q') or captured:
+            break
+
+    cam.release()
+    cv2.destroyAllWindows()
+    if captured:
+        messagebox.showinfo("Success", f"Image saved for ID: {user_id}")
+    else:
+        messagebox.showwarning("Failed", "No face detected!")
+
+# Train Model function
+def train_model():
+    def getImagesAndLabels(path):
+        faceSamples = []
+        ids = []
+        label_map = {}
+        label_id = 0
+
+        for folder in os.listdir(path):
+            folder_path = os.path.join(path, folder)
+            if os.path.isdir(folder_path):
+                for image_file in os.listdir(folder_path):
+                    image_path = os.path.join(folder_path, image_file)
+                    PIL_img = Image.open(image_path).convert('L')
+                    img_numpy = np.array(PIL_img, 'uint8')
+                    id_str = folder
+
+                    if id_str not in label_map:
+                        label_map[id_str] = label_id
+                        label_id += 1
+
+                    id = label_map[id_str]
+                    faces = detector.detectMultiScale(img_numpy)
+
+                    for (x, y, w, h) in faces:
+                        faceSamples.append(img_numpy[y:y + h, x:x + w])
+                        ids.append(id)
+
+        return faceSamples, ids, label_map
+
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    faces, ids, label_map = getImagesAndLabels('dataset')
+    if len(faces) < 1:
+        messagebox.showerror("Error", "No images to train. Capture faces first.")
+        return
+    recognizer.train(faces, np.array(ids))
+    recognizer.save("trainer/trainer.yml")
+
+    # Save label map to a file
+    with open("trainer/labels.csv", "w", newline='') as file:
+        writer = csv.writer(file)
+        for name, num in label_map.items():
+            writer.writerow([num, name])
+
+    messagebox.showinfo("Training", "Model trained successfully!")
+
+# Mark Attendance function
+def mark_attendance():
+    if not os.path.exists("trainer/trainer.yml"):
+        messagebox.showerror("Error", "Model not trained yet.")
+        return
+
+    # Load recognizer and label map
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    recognizer.read("trainer/trainer.yml")
+
+    label_map = {}
+    if os.path.exists("trainer/labels.csv"):
+        with open("trainer/labels.csv", "r") as file:
+            reader = csv.reader(file)
+            for row in reader:
+                label_map[int(row[0])] = row[1]
+
+    cam = cv2.VideoCapture(0)
+    attendance = set()
+
+    while True:
+        ret, frame = cam.read()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector.detectMultiScale(gray, 1.3, 5)
+
+        for (x, y, w, h) in faces:
+            roi = gray[y:y + h, x:x + w]
+            id, confidence = recognizer.predict(roi)
+
+            if confidence < 60:
+                name = label_map.get(id, "Unknown")
+                if name not in attendance:
+                    attendance.add(name)
+                    now = datetime.now()
+                    date_str = now.strftime("%Y-%m-%d")
+                    time_str = now.strftime("%H:%M:%S")
+
+                    if not os.path.exists("Attendance.csv"):
+                        with open("Attendance.csv", "w", newline='') as file:
+                            writer = csv.writer(file)
+                            writer.writerow(["Roll No", "Date", "Time"])
+
+                    with open("Attendance.csv", "a", newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow([name, date_str, time_str])
+
+                    cv2.putText(frame, f"{name} - Marked", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, f"{name} - Already Present", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            else:
+                cv2.putText(frame, "Unknown", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+        cv2.imshow("Attendance - Press Q to stop", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cam.release()
+    cv2.destroyAllWindows()
+    messagebox.showinfo("Done", "Attendance marked successfully!")
+
+# Buttons
+tk.Button(root, text="Capture Images", command=capture_images, width=25).pack(pady=5)
+tk.Button(root, text="Train Model", command=train_model, width=25).pack(pady=5)
+tk.Button(root, text="Mark Attendance", command=mark_attendance, width=25).pack(pady=5)
+tk.Button(root, text="Exit", command=root.destroy, width=25).pack(pady=20)
+
+root.mainloop()
